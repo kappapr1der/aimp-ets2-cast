@@ -1,0 +1,65 @@
+# Build trees and generated packages
+/build/
+/dist/
+/out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+*.ninja
+*.ninja_deps
+*.ninja_log
+
+# Compiler and linker output
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.dll
+*.exe
+*.aimppack
+*.zip
+
+# IDE files
+/.vs/
+/.vscode/
+/.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Runtime and diagnostic output
+*.log
+*.dmp
+*.mdmp
+
+# Local media and game/player state
+*.mp3
+*.wav
+*.flac
+*.ogg
+live_streams.sii
+live_streams.sii.*
+
+# Credentials and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# Temporary and backup files
+*.bak
+*.tmp
+*.temp
+*~
+
+# Private local validation record; the public summary is docs/VALIDATION.md
+/TEST_REPORT.md

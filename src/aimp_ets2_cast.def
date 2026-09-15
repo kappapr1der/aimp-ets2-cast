@@ -1,0 +1,7 @@
+LIBRARY aimp_ets2_cast
+EXPORTS
+    winampDSPGetHeader2
+    ets2cast_test_start
+    ets2cast_test_stop
+    ets2cast_test_status
+    ets2cast_test_log_path
