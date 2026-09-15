@@ -1,157 +1,157 @@
 # AIMP ETS2 Cast
 
-A small Windows DSP plugin that turns whatever AIMP is currently playing into a local MP3 radio stream for Euro Truck Simulator 2.
+Небольшой DSP-плагин для Windows, который превращает всё, что сейчас играет в AIMP, в локальный MP3-радиопоток для Euro Truck Simulator 2.
 
-Русская инструкция: [README_RU.md](README_RU.md)
+English version: [README_EN.md](README_EN.md)
 
-## What it does
+## Как это работает
 
 ```text
 AIMP
   ↓
 DSP PCM
   ↓
-MP3 encoder
+MP3-кодировщик
   ↓
-local HTTP stream
+локальный HTTP-поток
   ↓
-ETS2 Internet Radio
+Internet Radio в ETS2
 ```
 
-AIMP remains the player and the only place where you control music. The plugin receives decoded PCM from AIMP's Winamp-compatible DSP callback, encodes it as MP3, and serves it at one loopback-only URL:
+AIMP остаётся единственным музыкальным плеером и интерфейсом управления. Плагин получает уже декодированный PCM из совместимого с Winamp DSP-callback AIMP, кодирует звук в MP3 и отдаёт его по одному локальному адресу:
 
 ```text
 http://127.0.0.1:6969/stream
 ```
 
-## Features
+## Возможности
 
-- Uses the current AIMP playlist.
-- No copying music into the ETS2 music folder.
-- Shuffle, next, previous, repeat, pause, and play remain controlled by AIMP.
-- Local-only HTTP server bound to `127.0.0.1`.
-- 48 kHz stereo MP3 CBR stream at 256 kbps.
-- Approximately 750 ms startup prebuffer to prevent initial underruns.
-- Keeps the listener connected across track and supported sample-rate changes where possible.
-- No virtual audio cable.
-- No external Icecast or Shoutcast server.
-- No separate music player.
+- Использует текущий плейлист AIMP.
+- Не требует копировать музыку в папку ETS2.
+- Shuffle, repeat, next, previous, pause и play остаются под управлением AIMP.
+- HTTP-сервер доступен только на этом компьютере через `127.0.0.1`.
+- MP3 CBR 256 kbps, stereo, 48 kHz.
+- Стартовый буфер примерно на 750 мс уменьшает риск заикания при первом подключении.
+- По возможности сохраняет соединение слушателя при смене трека и поддерживаемом изменении sample rate.
+- Не требует виртуального аудиокабеля.
+- Не требует Icecast или Shoutcast.
+- Не запускает отдельный музыкальный плеер.
 
-## Requirements
+## Требования
 
-The 0.1.1 release was built and validated with:
+Версия 0.1.1 собрана и проверена в следующем окружении:
 
-- Windows 11 24H2 x64 (build 26100).
+- Windows 11 24H2 x64, build 26100.
 - AIMP 5.40.2700 x64.
-- The x64 `libLAME.dll` supplied with that AIMP installation (LAME 3.100).
-- A free TCP port 6969 on loopback.
+- `libLAME.dll` x64 из установленного AIMP, версия LAME 3.100.
+- Свободный локальный TCP-порт 6969.
 
-This release is x64 only. It will not load into a 32-bit AIMP process. VLC is not required; VLC 3.0.23 was used only as an independent playback check.
+Релиз 0.1.1 предназначен только для x64 и не загрузится в 32-битный процесс AIMP. VLC для работы не нужен: VLC 3.0.23 использовался только для независимой проверки потока.
 
-The release does not bundle AIMP, LAME, BASS, BASSenc, or BASSenc_MP3. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+В релиз не входят AIMP, LAME, BASS, BASSenc или BASSenc_MP3. Подробности приведены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Installation
+## Установка
 
-1. Download `aimp_ets2_cast-0.1.1.aimppack` from the GitHub Release.
-2. Open the file and confirm installation in AIMP.
-3. Start or restart AIMP.
-4. Open AIMP Preferences, go to **Plugins**, and enable **AIMP ETS2 Cast** if it is not already enabled.
-5. Open the plugin's DSP configuration window from AIMP's sound-effects/DSP controls.
+1. Скачайте `aimp_ets2_cast-0.1.1.aimppack` со страницы GitHub Release.
+2. Откройте скачанный файл и подтвердите установку в AIMP.
+3. Запустите или перезапустите AIMP.
+4. Откройте настройки AIMP, перейдите в раздел **Плагины** и включите **AIMP ETS2 Cast**, если он ещё не включён.
+5. Откройте окно плагина через элементы управления DSP/звуковыми эффектами AIMP.
 
-The `.aimppack` contains the plugin DLL in AIMP's required `x64` package directory. The release also provides a manual-install ZIP; copy its `aimp_ets2_cast` folder into AIMP's `Plugins` directory while AIMP is closed.
+Внутри `.aimppack` DLL находится в требуемом AIMP каталоге `x64`. На странице релиза также есть ZIP для ручной установки: при закрытом AIMP скопируйте из него целиком папку `aimp_ets2_cast` в каталог `Plugins` установленного AIMP.
 
-## Usage
+## Использование
 
-1. Start AIMP and play a normal local track or playlist.
-2. Enable **AIMP ETS2 Cast** as the DSP plugin.
-3. Open its small configuration window and click **Start**.
-4. Use exactly:
+1. Запустите AIMP и включите обычный локальный трек или плейлист.
+2. Выберите **AIMP ETS2 Cast** в качестве DSP-плагина.
+3. Откройте небольшое окно плагина и нажмите **Start**.
+4. Используйте точный адрес:
 
    ```text
    http://127.0.0.1:6969/stream
    ```
 
-> **Do not add a trailing slash.**
+> **Не добавляйте слеш в конце адреса.**
 >
-> Correct: `http://127.0.0.1:6969/stream`
+> Правильно: `http://127.0.0.1:6969/stream`
 >
-> Wrong: `http://127.0.0.1:6969/stream/`
+> Неправильно: `http://127.0.0.1:6969/stream/`
 
-Version 0.1.1 intentionally exposes `/stream`; `/stream/` may return `404 Not Found`.
+Версия 0.1.1 намеренно публикует только endpoint `/stream`; запрос `/stream/` может вернуть `404 Not Found`.
 
-Click **Stop** to close the encoder, listener connections, and HTTP server. Repeated Start → Stop → Start cycles are supported without restarting AIMP.
+Кнопка **Stop** останавливает кодировщик, отключает слушателей и закрывает HTTP-сервер. Повторные циклы Start → Stop → Start работают без перезапуска AIMP.
 
-## ETS2 setup
+## Настройка ETS2
 
-Back up `Documents\Euro Truck Simulator 2\live_streams.sii` before editing it. Do not replace the whole file or remove existing stations.
+Перед ручным редактированием `Documents\Euro Truck Simulator 2\live_streams.sii` обязательно сделайте резервную копию. Не заменяйте файл целиком и не удаляйте существующие станции.
 
-The exact `live_streams.sii` wrapper and station count vary between game versions. The following is an **example station record only**, not a complete universal file:
+Обёртка `live_streams.sii` и счётчик станций могут отличаться между версиями игры. Строка ниже — **только пример одной записи**, а не универсальный готовый файл:
 
 ```text
-stream_data[N]: "http://127.0.0.1:6969/stream|AIMP Local|Local|EN|256|0"
+stream_data[N]: "http://127.0.0.1:6969/stream|AIMP Local|Local|RU|256|0"
 ```
 
-Use the next valid index instead of `N` and update the file's existing `stream_data` count as required by its current syntax. Preserve every existing station. If your ETS2 version provides an in-game station editor, prefer adding the exact URL there.
+Вместо `N` укажите следующий допустимый индекс и при необходимости обновите существующий счётчик `stream_data`. Все уже добавленные пользователем станции нужно сохранить. Если ваша версия ETS2 позволяет добавлять станции через интерфейс игры, предпочтительнее указать точный URL там.
 
-Version 0.1.0 was confirmed working in ETS2 by a real user, including track switching. Version 0.1.1 keeps the same HTTP URL and stream protocol while changing only startup buffering; 0.1.1 itself was not rerun in ETS2 on the release-build machine.
+Работа версии 0.1.0 в ETS2 подтверждена реальным пользователем, включая переключение треков. Версия 0.1.1 сохраняет тот же URL и протокол, изменяя только стартовую буферизацию; отдельный запуск 0.1.1 в ETS2 на машине релизной сборки не проводился.
 
-## Known limitations
+## Известные ограничения
 
-- Track metadata is not currently forwarded to ETS2 or other listeners.
-- The endpoint is intentionally local only; other computers and phones cannot connect.
-- The release is x64 only.
-- `/stream/` is not equivalent to `/stream` in 0.1.1.
-- The DLL is not digitally signed, so Windows may display a publisher warning.
+- Название и другие метаданные текущего трека пока не передаются в ETS2 или внешнему плееру.
+- Поток намеренно доступен только на этом компьютере.
+- Релиз собран только для x64.
+- В версии 0.1.1 адрес `/stream/` не равнозначен `/stream`.
+- DLL не имеет цифровой подписи, поэтому Windows может показать предупреждение о неизвестном издателе.
 
-## Troubleshooting
+## Решение проблем
 
-### Port 6969 is already in use
+### Порт 6969 уже занят
 
-Stop the other program using port 6969, then click **Start** again. The plugin intentionally does not choose another port.
+Закройте программу, которая использует порт 6969, после чего снова нажмите **Start**. Плагин намеренно не выбирает другой порт автоматически.
 
-### The stream works in a browser or VLC but not in ETS2
+### Поток открывается в браузере или VLC, но не работает в ETS2
 
-Check the saved station URL character by character. The most common cause is an accidental trailing slash. Also make sure AIMP is playing and broadcasting before selecting the station in ETS2.
+Проверьте сохранённый адрес посимвольно. Самая частая причина — случайный `/` в конце URL. Также убедитесь, что AIMP уже воспроизводит музыку, а вещание запущено до выбора станции в ETS2.
 
-### The plugin is not visible in AIMP
+### Плагин не виден в AIMP
 
-Confirm that AIMP is x64, restart AIMP after installation, and check that the plugin is enabled under Preferences → Plugins. A 32-bit AIMP process cannot load this release.
+Убедитесь, что установлен AIMP x64, перезапустите его после установки плагина и проверьте, включён ли плагин в разделе **Настройки → Плагины**. Сборка x64 не загрузится в 32-битный AIMP.
 
-### There is no audio
+### Поток открывается, но звука нет
 
-Play a local track in AIMP, open the plugin window, and verify that its status changes to **Broadcasting**. Test the exact URL in another player. AIMP's DSP input must be 16-bit PCM; unsupported input is reported in the log.
+Запустите локальный трек в AIMP, откройте окно плагина и убедитесь, что отображается статус **Broadcasting**. Затем проверьте точный URL во внешнем плеере. DSP-вход должен быть 16-битным PCM; неподдерживаемый формат будет указан в логе.
 
-### Log location
+### Где находится лог
 
-The bounded diagnostic log is written to:
+Диагностический лог ограниченного размера записывается сюда:
 
 ```text
 %LOCALAPPDATA%\AIMP-ETS2-Cast\ets2cast.log
 ```
 
-If that directory cannot be used, the plugin falls back to `ets2cast.log` beside the DLL. It logs lifecycle, PCM parameters, startup timing, listeners, and errors, but never logs PCM payloads or music files.
+Если этот каталог недоступен для записи, плагин создаёт `ets2cast.log` рядом со своей DLL. В лог попадают жизненный цикл, параметры PCM, стартовые тайминги, подключения слушателей и ошибки. PCM-данные и содержимое музыкальных файлов не записываются.
 
-## Building from source
+## Сборка из исходников
 
-The project uses C++17, CMake, Ninja, and an x64 MinGW-w64 compiler. No encoder SDK or import library is needed because `libLAME.dll` is resolved dynamically at runtime.
+Проект использует C++17, CMake, Ninja и компилятор MinGW-w64 x64. SDK или import library кодировщика не нужны: `libLAME.dll` загружается динамически во время работы.
 
 ```powershell
 .\build.ps1 -ToolchainBin ".\w64devkit\bin" -Configuration Release -Clean
 ```
 
-The script runs CTest and creates the two release packages in `dist/`. Build products and release binaries are intentionally ignored by git.
+Скрипт запускает CTest и создаёт два релизных пакета в `dist/`. Результаты сборки и готовые бинарники намеренно исключены из git.
 
-## Validation
+## Проверка
 
-The public, path-scrubbed validation summary is in [docs/VALIDATION.md](docs/VALIDATION.md). Version history is in [CHANGELOG.md](CHANGELOG.md).
+Очищенный от локальных путей отчёт находится в [docs/VALIDATION.md](docs/VALIDATION.md). История версий — в [CHANGELOG.md](CHANGELOG.md).
 
-## Credits
+## Авторы
 
-- Original concept: [@nuclearsunrise](https://github.com/nuclearsunrise)
-- Production and project development: [@kappapr1der](https://github.com/kappapr1der)
+- Первоначальная идея: [@nuclearsunrise](https://github.com/nuclearsunrise)
+- Продакшн и развитие проекта: [@kappapr1der](https://github.com/kappapr1der)
 
-## License
+## Лицензия
 
-The independently written AIMP ETS2 Cast source code is licensed under the [MIT License](LICENSE). Third-party programs and libraries keep their own licenses and are not relicensed by this repository.
+Самостоятельно написанный исходный код AIMP ETS2 Cast распространяется по [лицензии MIT](LICENSE). Сторонние программы и библиотеки сохраняют собственные лицензии и не перелицензируются этим репозиторием.
 
-Artem Izmaylov's [AIMP LanCast](https://github.com/ArtemIzmaylov/aimp_lancast) (MPL-2.0) was used only as a technical reference for AIMP's use of the standard Winamp DSP callback ABI. No LanCast Delphi source, UI resources, BASS_WMA code, or compiled binaries are included or adapted here. Details are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[AIMP LanCast](https://github.com/ArtemIzmaylov/aimp_lancast) Артёма Измайлова под лицензией MPL-2.0 использовался только как технический референс реализации стандартного Winamp DSP callback в AIMP. Исходники Delphi, UI-ресурсы, код BASS_WMA и WMA/MMS-сервер LanCast не копировались и не адаптировались. Подробности — в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
