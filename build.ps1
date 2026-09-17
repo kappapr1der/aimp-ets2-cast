@@ -46,7 +46,7 @@ if ($LASTEXITCODE -ne 0) { throw "Build failed: $LASTEXITCODE" }
 & $ctest --test-dir $buildDir --output-on-failure
 if ($LASTEXITCODE -ne 0) { throw "Tests failed: $LASTEXITCODE" }
 
-$version = "0.1.1"
+$version = "0.1.2-rc1"
 $distDir = Join-Path $projectRoot "dist"
 $manualRoot = Join-Path $buildDir "manual-package"
 $manualPluginDir = Join-Path $manualRoot "aimp_ets2_cast"

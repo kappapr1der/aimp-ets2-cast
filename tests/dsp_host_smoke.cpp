@@ -10,6 +10,20 @@ using TestStartProc = int (__cdecl *)(void);
 using TestStopProc = void (__cdecl *)(void);
 using TestLogPathProc = const wchar_t *(__cdecl *)(void);
 
+static void WaitUntil(LONGLONG deadline) {
+    for (;;) {
+        LARGE_INTEGER now = {};
+        QueryPerformanceCounter(&now);
+        const LONGLONG remaining = deadline - now.QuadPart;
+        if (remaining <= 0) {
+            return;
+        }
+        // The smoke host deliberately busy-waits: the Windows timer in the
+        // test environment rounds Sleep to a scheduler quantum and otherwise
+        // feeds PCM substantially slower than realtime.
+    }
+}
+
 int wmain(int argc, wchar_t **argv) {
     if (argc < 2) {
         fwprintf(stderr, L"Usage: dsp_host_smoke.exe <plugin.dll> [seconds] [libLAME.dll]\n");
@@ -83,6 +97,11 @@ int wmain(int argc, wchar_t **argv) {
     const int framesPerBlock = 1152;
     short samples[framesPerBlock * 2];
     double phase = 0.0;
+    LARGE_INTEGER performanceFrequency = {};
+    QueryPerformanceFrequency(&performanceFrequency);
+    LONGLONG modifyCalls = 0;
+    LONGLONG modifyTotalTicks = 0;
+    LONGLONG modifyMaxTicks = 0;
     printf("SMOKE HOST READY http://127.0.0.1:6969/stream\n");
     fflush(stdout);
     const ULONGLONG start = GetTickCount64();
@@ -92,6 +111,8 @@ int wmain(int argc, wchar_t **argv) {
             Sleep(50);
             continue;
         }
+        LARGE_INTEGER blockCycleStarted = {};
+        QueryPerformanceCounter(&blockCycleStarted);
         // Simulate a track transition from 44.1 kHz to 48 kHz while a
         // listener stays connected to the same HTTP endpoint.
         const int sampleRate = elapsed < 6000 ? 44100 : 48000;
@@ -106,10 +127,30 @@ int wmain(int argc, wchar_t **argv) {
                 phase -= 2.0 * 3.14159265358979323846;
             }
         }
+        LARGE_INTEGER modifyStarted = {};
+        LARGE_INTEGER modifyFinished = {};
+        QueryPerformanceCounter(&modifyStarted);
         module->modifySamples(module, samples, framesPerBlock, 16, 2, sampleRate);
-        Sleep(sampleRate == 44100 ? 26 : 24);
+        QueryPerformanceCounter(&modifyFinished);
+        const LONGLONG modifyTicks = modifyFinished.QuadPart - modifyStarted.QuadPart;
+        ++modifyCalls;
+        modifyTotalTicks += modifyTicks;
+        if (modifyTicks > modifyMaxTicks) {
+            modifyMaxTicks = modifyTicks;
+        }
+        const LONGLONG blockDurationTicks =
+            performanceFrequency.QuadPart * framesPerBlock / sampleRate;
+        WaitUntil(blockCycleStarted.QuadPart + blockDurationTicks);
     }
 
+    const double modifyAverageUs = modifyCalls > 0 && performanceFrequency.QuadPart > 0
+        ? static_cast<double>(modifyTotalTicks) * 1000000.0 /
+            static_cast<double>(performanceFrequency.QuadPart) / static_cast<double>(modifyCalls)
+        : 0.0;
+    const double modifyMaxUs = performanceFrequency.QuadPart > 0
+        ? static_cast<double>(modifyMaxTicks) * 1000000.0 / static_cast<double>(performanceFrequency.QuadPart)
+        : 0.0;
+    printf("MODIFY_CALLS=%lld MODIFY_AVG_US=%.3f MODIFY_MAX_US=%.3f\n", modifyCalls, modifyAverageUs, modifyMaxUs);
     testStop();
     module->quit(module);
     FreeLibrary(plugin);

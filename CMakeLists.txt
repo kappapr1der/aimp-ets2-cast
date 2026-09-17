@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AIMP_ETS2_Cast VERSION 0.1.1 LANGUAGES CXX RC)
+project(AIMP_ETS2_Cast VERSION 0.1.2 LANGUAGES CXX RC)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AIMP ETS2 Cast builds only for Windows")

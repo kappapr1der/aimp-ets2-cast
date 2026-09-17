@@ -1,8 +1,8 @@
 #include <windows.h>
 
 1 VERSIONINFO
- FILEVERSION 0,1,1,0
- PRODUCTVERSION 0,1,1,0
+ FILEVERSION 0,1,2,0
+ PRODUCTVERSION 0,1,2,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -19,11 +19,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "AIMP ETS2 Cast contributors\0"
             VALUE "FileDescription", "AIMP ETS2 Cast Winamp DSP plugin\0"
-            VALUE "FileVersion", "0.1.1.0\0"
+            VALUE "FileVersion", "0.1.2.0\0"
             VALUE "InternalName", "aimp_ets2_cast\0"
             VALUE "OriginalFilename", "aimp_ets2_cast.dll\0"
             VALUE "ProductName", "AIMP ETS2 Cast\0"
-            VALUE "ProductVersion", "0.1.1 prototype\0"
+            VALUE "ProductVersion", "0.1.2-rc1\0"
         END
     END
     BLOCK "VarFileInfo"

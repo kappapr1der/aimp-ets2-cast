@@ -54,6 +54,9 @@ int main(int argc, char **argv) {
     ULONGLONG firstHeadersMs = ~0ull;
     ULONGLONG firstAudioMs = ~0ull;
     ULONGLONG firstMp3FrameMs = ~0ull;
+    ULONGLONG lastAudioReceivedAt = 0;
+    ULONGLONG maxAudioGapMs = 0;
+    int audioGapsOver150Ms = 0;
     unsigned long long firstMp3FrameOffset = ~0ull;
     unsigned char firstAudioPrefix[4] = {};
     int firstAudioPrefixCount = 0;
@@ -92,6 +95,16 @@ int main(int argc, char **argv) {
             if (firstAudioMs == ~0ull) {
                 firstAudioMs = receivedAt - requestSentAt;
             }
+            if (lastAudioReceivedAt != 0) {
+                const ULONGLONG gapMs = receivedAt - lastAudioReceivedAt;
+                if (gapMs > maxAudioGapMs) {
+                    maxAudioGapMs = gapMs;
+                }
+                if (gapMs > 150) {
+                    ++audioGapsOver150Ms;
+                }
+            }
+            lastAudioReceivedAt = receivedAt;
             if (firstAudioPrefixCount == 0) {
                 firstAudioPrefixCount = used < 4 ? used : 4;
                 memcpy(firstAudioPrefix, buffer, static_cast<size_t>(firstAudioPrefixCount));
@@ -120,14 +133,17 @@ int main(int argc, char **argv) {
 
     printf(
         "HTTP_OK=%d CONTENT_TYPE_OK=%d AUDIO_BYTES=%llu MP3_SYNC_CANDIDATES=%d "
-        "HEADERS_MS=%llu FIRST_AUDIO_MS=%llu FIRST_MP3_FRAME_MS=%llu\n",
+        "HEADERS_MS=%llu FIRST_AUDIO_MS=%llu FIRST_MP3_FRAME_MS=%llu "
+        "MAX_AUDIO_GAP_MS=%llu AUDIO_GAPS_OVER_150_MS=%d\n",
         httpOk ? 1 : 0,
         contentTypeOk ? 1 : 0,
         audioBytes,
         mp3SyncCount,
         firstHeadersMs,
         firstAudioMs,
-        firstMp3FrameMs);
+        firstMp3FrameMs,
+        maxAudioGapMs,
+        audioGapsOver150Ms);
     printf(
         "FIRST_AUDIO_PREFIX=%02X%02X%02X%02X FIRST_MP3_FRAME_OFFSET=%llu\n",
         firstAudioPrefix[0],

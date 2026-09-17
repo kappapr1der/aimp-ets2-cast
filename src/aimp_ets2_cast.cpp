@@ -218,6 +218,9 @@ public:
           currentChannels_(0),
           currentBits_(0),
           lastInputTick_(0),
+          silenceFillStartedTick_(0),
+          silenceFramesInjected_(0),
+          silenceFillActive_(false),
           broadcastStartTick_(0),
           firstPcmTick_(0),
           firstMp3FrameTick_(0) {
@@ -324,6 +327,10 @@ public:
         broadcastStartTick_ = GetTickCount64();
         firstPcmTick_ = 0;
         firstMp3FrameTick_ = 0;
+        lastInputTick_ = 0;
+        silenceFillStartedTick_ = 0;
+        silenceFramesInjected_ = 0;
+        silenceFillActive_ = false;
         listenSocket_ = listener;
         ResetEvent(stopEvent_);
         ResetEvent(queueEvent_);
@@ -445,14 +452,10 @@ public:
         block->sampleRate = sampleRate;
         CopyMemory(block->data, samples, static_cast<SIZE_T>(byteCount64));
 
-        if (!TryEnterCriticalSection(&queueLock_)) {
-            HeapFree(GetProcessHeap(), 0, block);
-            const LONG dropped = InterlockedIncrement(&droppedBlocks_);
-            if ((dropped % 100) == 1) {
-                LoggerWrite("PCM queue busy; dropped_blocks=%ld", dropped);
-            }
-            return;
-        }
+        // This lock is held only while queue pointers/counters are updated.
+        // Dropping a whole PCM block on a momentary collision produces an
+        // audible random gap, so wait for the very short critical section.
+        EnterCriticalSection(&queueLock_);
         while (queueHead_ && queueBytes_ + block->byteCount > kMaxQueueBytes) {
             AudioBlock *old = queueHead_;
             queueHead_ = old->next;
@@ -804,6 +807,19 @@ private:
 
             AudioBlock *block = Dequeue();
             if (block) {
+                if (silenceFillActive_) {
+                    const ULONGLONG resumedAt = GetTickCount64();
+                    const ULONGLONG injectedMs = encoderInputRate_ > 0
+                        ? silenceFramesInjected_ * 1000u / static_cast<ULONGLONG>(encoderInputRate_)
+                        : 0;
+                    LoggerWrite(
+                        "PCM resumed after automatic silence; gap_ms=%llu inserted_silence_ms=%llu",
+                        static_cast<unsigned long long>(resumedAt - silenceFillStartedTick_),
+                        static_cast<unsigned long long>(injectedMs));
+                    silenceFillStartedTick_ = 0;
+                    silenceFramesInjected_ = 0;
+                    silenceFillActive_ = false;
+                }
                 if (firstPcmTick_ == 0) {
                     firstPcmTick_ = GetTickCount64();
                     LoggerWrite(
@@ -836,8 +852,22 @@ private:
                 continue;
             }
 
-            if (wait == WAIT_TIMEOUT && lameHandle_ && lastInputTick_ != 0 && GetTickCount64() - lastInputTick_ >= 150) {
-                int frames = encoderInputRate_ / 10;
+            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG pcmGapMs = lastInputTick_ != 0 ? now - lastInputTick_ : 0;
+            if (wait == WAIT_TIMEOUT &&
+                lameHandle_ &&
+                lastInputTick_ != 0 &&
+                (silenceFillActive_ || pcmGapMs >= 150)) {
+                // Once a real PCM gap is confirmed, fill the actual elapsed
+                // wall-clock time. The former fixed 100 ms block every ~200 ms
+                // produced silence at half speed and drained the listener's
+                // buffer during pauses or scheduling stalls.
+                ULONGLONG fillMs = pcmGapMs;
+                if (fillMs > 250) {
+                    fillMs = 250;
+                }
+                int frames = static_cast<int>(
+                    static_cast<ULONGLONG>(encoderInputRate_) * fillMs / 1000u);
                 if (frames < 400) {
                     frames = 400;
                 }
@@ -847,10 +877,19 @@ private:
                 const size_t bytes = static_cast<size_t>(frames) * 2u * sizeof(short);
                 short *silence = static_cast<short *>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bytes));
                 if (silence) {
-                    EncodePcm16(silence, frames, 2, encoderInputRate_);
+                    if (!silenceFillActive_) {
+                        silenceFillStartedTick_ = lastInputTick_;
+                        silenceFillActive_ = true;
+                        LoggerWrite(
+                            "automatic silence started; pcm_gap_ms=%llu",
+                            static_cast<unsigned long long>(pcmGapMs));
+                    }
+                    if (EncodePcm16(silence, frames, 2, encoderInputRate_)) {
+                        silenceFramesInjected_ += static_cast<ULONGLONG>(frames);
+                        lastInputTick_ = GetTickCount64();
+                    }
                     HeapFree(GetProcessHeap(), 0, silence);
                 }
-                lastInputTick_ = GetTickCount64();
             }
         }
 
@@ -1035,6 +1074,7 @@ private:
         while (index < clientCount_) {
             const int sent = send(clients_[index], reinterpret_cast<const char *>(data), length, 0);
             if (sent != length) {
+                const int error = sent == SOCKET_ERROR ? WSAGetLastError() : 0;
                 shutdown(clients_[index], SD_BOTH);
                 closesocket(clients_[index]);
                 for (int move = index; move + 1 < clientCount_; ++move) {
@@ -1042,7 +1082,12 @@ private:
                 }
                 clients_[clientCount_ - 1] = INVALID_SOCKET;
                 --clientCount_;
-                LoggerWrite("listener disconnected; listeners=%d", clientCount_);
+                LoggerWrite(
+                    "listener disconnected; listeners=%d sent=%d requested=%d winsock_error=%d",
+                    clientCount_,
+                    sent,
+                    length,
+                    error);
                 continue;
             }
             ++index;
@@ -1166,6 +1211,9 @@ private:
     int currentChannels_;
     int currentBits_;
     ULONGLONG lastInputTick_;
+    ULONGLONG silenceFillStartedTick_;
+    ULONGLONG silenceFramesInjected_;
+    bool silenceFillActive_;
     ULONGLONG broadcastStartTick_;
     ULONGLONG firstPcmTick_;
     ULONGLONG firstMp3FrameTick_;
@@ -1373,7 +1421,7 @@ void __cdecl DspConfig(winampDSPModule *module) {
 
 int __cdecl DspInit(winampDSPModule *module) {
     LoggerInitialize();
-    LoggerWrite("plugin init; name=AIMP ETS2 Cast version=0.1.1 architecture=%u-bit", static_cast<unsigned>(sizeof(void *) * 8));
+    LoggerWrite("plugin init; name=AIMP ETS2 Cast version=0.1.2-rc1 architecture=%u-bit", static_cast<unsigned>(sizeof(void *) * 8));
     if (!module) {
         LoggerWrite("plugin init failed; null module");
         return 1;
