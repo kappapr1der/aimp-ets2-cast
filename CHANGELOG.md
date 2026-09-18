@@ -1,4 +1,35 @@
-# Changelog
+# История изменений
+
+## 0.1.2
+
+### Добавлено
+
+- Название текущего трека AIMP передаётся совместимым слушателям как ICY
+  `StreamTitle` в UTF-8.
+- ICY metadata включается только по запросу клиента `Icy-MetaData: 1`;
+  остальные клиенты получают прежний чистый MP3-поток.
+- Добавлен отдельный ICY-пробник, проверяющий смену трёх названий внутри
+  одного HTTP-соединения.
+- Название станции в примерах и ICY-заголовке изменено на «Дальнобой FM».
+
+### Исправлено
+
+- В стабильный релиз включены исправления случайных пропусков PCM и темпа
+  автоматической тишины, проверенные в `0.1.2-rc1`.
+- Временный Winsock `WSAEWOULDBLOCK` больше не отключает listener. Небольшая
+  ограниченная очередь на каждого клиента сохраняет неотправленные MP3/ICY-
+  байты и досылает их после освобождения локального сокета.
+
+### Проверено
+
+- Regression-тест намеренно останавливает чтение ICY-клиента, воспроизводит
+  сетевой backpressure, затем подтверждает восстановление того же соединения.
+
+URL и endpoint не изменились: `http://127.0.0.1:6969/stream`.
+
+ETS2 1.61 воспроизводит поток и сохраняет соединение при смене треков, но не
+показывает динамический ICY `StreamTitle`. Внешние ICY-совместимые клиенты
+получают названия нормально.
 
 ## 0.1.2-rc1
 
@@ -16,21 +47,25 @@
 
 ## 0.1.1
 
-### Changed
+### Изменено
 
-- Added startup MP3 prebuffer.
-- Listener now receives approximately 750 ms of valid MP3 frames before realtime streaming.
-- Keeps stream/server alive during supported track/sample-rate changes.
+- Добавлен стартовый MP3-буфер.
+- Перед переходом к текущему потоку listener получает примерно 750 мс
+  валидных MP3-кадров.
+- При поддерживаемой смене трека или sample rate соединение и HTTP-сервер
+  сохраняются.
 
-### Verified
+### Проверено
 
-- AIMP DSP
-- HTTP streaming
-- VLC playback
-- Start/Stop cycles
-- Pause/Play
-- 44.1 → 48 kHz transition
-- Multiple Next operations
-- Port collision handling
+- AIMP DSP.
+- HTTP-поток.
+- Воспроизведение через VLC.
+- Повторные циклы Start/Stop.
+- Pause/Play.
+- Переход 44,1 → 48 кГц.
+- Несколько переключений Next.
+- Обработка занятого порта.
 
-Version 0.1.0 was confirmed working in ETS2 by a real user. Version 0.1.1 retains the same URL and protocol path while changing startup buffering. Version 0.1.1 was not independently rerun in ETS2 on the release-build machine.
+Работа версии 0.1.0 в ETS2 была подтверждена реальным пользователем. Версия
+0.1.1 сохранила тот же URL и протокол, изменив только стартовую буферизацию.
+На машине сборки отдельный повторный тест 0.1.1 в ETS2 не проводился.

@@ -33,13 +33,17 @@ http://127.0.0.1:6969/stream
 - 48 kHz stereo MP3 CBR stream at 256 kbps.
 - Approximately 750 ms startup prebuffer to prevent initial underruns.
 - Keeps the listener connected across track and supported sample-rate changes where possible.
+- Sends the current artist and track title as ICY metadata to compatible listeners.
+- Clients that do not request ICY metadata continue receiving the original raw MP3 stream.
+- A bounded per-listener output queue absorbs transient local-socket
+  backpressure without blocking the DSP or dropping the connection.
 - No virtual audio cable.
 - No external Icecast or Shoutcast server.
 - No separate music player.
 
 ## Requirements
 
-The 0.1.1 release was built and validated with:
+The 0.1.2 release was built and validated with:
 
 - Windows 11 24H2 x64 (build 26100).
 - AIMP 5.40.2700 x64.
@@ -52,7 +56,7 @@ The release does not bundle AIMP, LAME, BASS, BASSenc, or BASSenc_MP3. See [THIR
 
 ## Installation
 
-1. Download `aimp_ets2_cast-0.1.1.aimppack` from the GitHub Release.
+1. Download `aimp_ets2_cast-0.1.2.aimppack` from the GitHub Release.
 2. Open the file and confirm installation in AIMP.
 3. Start or restart AIMP.
 4. Open AIMP Preferences, go to **Plugins**, and enable **AIMP ETS2 Cast** if it is not already enabled.
@@ -77,7 +81,7 @@ The `.aimppack` contains the plugin DLL in AIMP's required `x64` package directo
 >
 > Wrong: `http://127.0.0.1:6969/stream/`
 
-Version 0.1.1 intentionally exposes `/stream`; `/stream/` may return `404 Not Found`.
+Version 0.1.2 intentionally exposes `/stream`; `/stream/` may return `404 Not Found`.
 
 Click **Stop** to close the encoder, listener connections, and HTTP server. Repeated Start → Stop → Start cycles are supported without restarting AIMP.
 
@@ -88,19 +92,19 @@ Back up `Documents\Euro Truck Simulator 2\live_streams.sii` before editing it. D
 The exact `live_streams.sii` wrapper and station count vary between game versions. The following is an **example station record only**, not a complete universal file:
 
 ```text
-stream_data[N]: "http://127.0.0.1:6969/stream|AIMP Local|Local|EN|256|0"
+stream_data[N]: "http://127.0.0.1:6969/stream|Дальнобой FM|Local|RU|256|0"
 ```
 
 Use the next valid index instead of `N` and update the file's existing `stream_data` count as required by its current syntax. Preserve every existing station. If your ETS2 version provides an in-game station editor, prefer adding the exact URL there.
 
-Version 0.1.0 was confirmed working in ETS2 by a real user, including track switching. Version 0.1.1 keeps the same HTTP URL and stream protocol while changing only startup buffering; 0.1.1 itself was not rerun in ETS2 on the release-build machine.
+Version 0.1.0 was confirmed working in ETS2 by a real user, including track switching. Version 0.1.2 keeps the same URL and MP3 format. ICY metadata is inserted only when a client explicitly requests it, preserving compatibility with existing listeners.
 
 ## Known limitations
 
-- Track metadata is not currently forwarded to ETS2 or other listeners.
+- ETS2 1.61 plays the stream but does not display the current ICY track title. Compatible external players still receive metadata; this limitation does not affect ETS2 audio.
 - The endpoint is intentionally local only; other computers and phones cannot connect.
 - The release is x64 only.
-- `/stream/` is not equivalent to `/stream` in 0.1.1.
+- `/stream/` is not equivalent to `/stream` in 0.1.2.
 - The DLL is not digitally signed, so Windows may display a publisher warning.
 
 ## Troubleshooting
@@ -123,13 +127,13 @@ Play a local track in AIMP, open the plugin window, and verify that its status c
 
 ### Log location
 
-The bounded diagnostic log is written to:
+The diagnostic log is written to:
 
 ```text
-%LOCALAPPDATA%\AIMP-ETS2-Cast\ets2cast.log
+%APPDATA%\AIMP\AIMP-ETS2-Cast\ets2cast.log
 ```
 
-If that directory cannot be used, the plugin falls back to `ets2cast.log` beside the DLL. It logs lifecycle, PCM parameters, startup timing, listeners, and errors, but never logs PCM payloads or music files.
+If the primary directory cannot be used, the plugin tries `%LOCALAPPDATA%`, TEMP, and finally the DLL directory. It logs lifecycle, PCM parameters, startup timing, listeners, and errors, but never logs PCM payloads or music files.
 
 ## Building from source
 
@@ -143,7 +147,7 @@ The script runs CTest and creates the two release packages in `dist/`. Build pro
 
 ## Validation
 
-The public, path-scrubbed validation summary is in [docs/VALIDATION.md](docs/VALIDATION.md). Version history is in [CHANGELOG.md](CHANGELOG.md).
+The validation report for version 0.1.2 is in [docs/VALIDATION_0.1.2.md](docs/VALIDATION_0.1.2.md). Version history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 

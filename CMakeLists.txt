@@ -51,6 +51,20 @@ if(MINGW)
 endif()
 set_target_properties(stream_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+add_executable(icy_metadata_probe tests/icy_metadata_probe.cpp)
+target_link_libraries(icy_metadata_probe PRIVATE ws2_32)
+if(MINGW)
+    target_link_options(icy_metadata_probe PRIVATE -static-libgcc -static-libstdc++)
+endif()
+set_target_properties(icy_metadata_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(backpressure_probe tests/backpressure_probe.cpp)
+target_link_libraries(backpressure_probe PRIVATE ws2_32)
+if(MINGW)
+    target_link_options(backpressure_probe PRIVATE -static-libgcc -static-libstdc++)
+endif()
+set_target_properties(backpressure_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 enable_testing()
 add_test(NAME export_table
     COMMAND ${CMAKE_COMMAND} -E env EXPECTED_DLL=$<TARGET_FILE:aimp_ets2_cast>

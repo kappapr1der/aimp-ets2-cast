@@ -11,8 +11,10 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <limits.h>
 #include <new>
 
+#include "aimp_remote_info.h"
 #include "winamp_dsp.h"
 
 namespace {
@@ -25,6 +27,14 @@ constexpr size_t kMaxQueueBytes = 8u * 1024u * 1024u;
 constexpr ULONGLONG kPrebufferMilliseconds = 750;
 constexpr size_t kPrebufferTargetBytes =
     static_cast<size_t>(kBitrateKbps) * 1000u / 8u * kPrebufferMilliseconds / 1000u;
+constexpr size_t kIcyMetadataInterval = 16384;
+constexpr ULONGLONG kMetadataRefreshMilliseconds = 500;
+constexpr size_t kMaxStreamTitleBytes = 1024;
+constexpr size_t kInitialClientPendingBytes = 4096;
+// FMOD can read a local radio stream in large bursts.  Keep enough bounded
+// per-listener reserve for roughly one minute at 256 kbps without blocking
+// the encoder worker.
+constexpr size_t kMaxClientPendingBytes = 2u * 1024u * 1024u;
 constexpr UINT_PTR kUiTimerId = 1;
 
 HINSTANCE g_moduleInstance = nullptr;
@@ -39,6 +49,51 @@ CRITICAL_SECTION g_logLock;
 bool g_logLockReady = false;
 HANDLE g_logFile = INVALID_HANDLE_VALUE;
 wchar_t g_logPath[MAX_PATH * 2] = {};
+
+bool LoggerOpenExactPath(const wchar_t *path) {
+    if (!path || !path[0]) {
+        return false;
+    }
+    HANDLE file = CreateFileW(
+        path,
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER zero = {};
+    if (!SetFilePointerEx(file, zero, nullptr, FILE_END)) {
+        CloseHandle(file);
+        return false;
+    }
+    g_logFile = file;
+    wcscpy_s(g_logPath, path);
+    return true;
+}
+
+bool LoggerOpenInBaseDirectory(const wchar_t *baseDirectory) {
+    if (!baseDirectory || !baseDirectory[0]) {
+        return false;
+    }
+    wchar_t directory[MAX_PATH * 2] = {};
+    _snwprintf_s(
+        directory,
+        _countof(directory),
+        _TRUNCATE,
+        L"%ls%lsAIMP-ETS2-Cast",
+        baseDirectory,
+        baseDirectory[wcslen(baseDirectory) - 1] == L'\\' ? L"" : L"\\");
+    if (!CreateDirectoryW(directory, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        return false;
+    }
+    wchar_t path[MAX_PATH * 2] = {};
+    _snwprintf_s(path, _countof(path), _TRUNCATE, L"%ls\\ets2cast.log", directory);
+    return LoggerOpenExactPath(path);
+}
 
 void LoggerWrite(const char *format, ...) {
     if (!g_logLockReady || g_logFile == INVALID_HANDLE_VALUE) {
@@ -75,7 +130,8 @@ void LoggerWrite(const char *format, ...) {
 
     EnterCriticalSection(&g_logLock);
     DWORD written = 0;
-    SetFilePointer(g_logFile, 0, nullptr, FILE_END);
+    LARGE_INTEGER zero = {};
+    SetFilePointerEx(g_logFile, zero, nullptr, FILE_END);
     WriteFile(g_logFile, line, static_cast<DWORD>(length), &written, nullptr);
     FlushFileBuffers(g_logFile);
     LeaveCriticalSection(&g_logLock);
@@ -90,45 +146,56 @@ void LoggerInitialize() {
         return;
     }
 
-    wchar_t localAppData[MAX_PATH] = {};
-    const DWORD count = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-    if (count == 0 || count >= MAX_PATH) {
-        GetTempPathW(MAX_PATH, localAppData);
+    wchar_t baseDirectory[MAX_PATH] = {};
+    DWORD count = GetEnvironmentVariableW(L"APPDATA", baseDirectory, MAX_PATH);
+    if (count > 0 && count < MAX_PATH) {
+        wchar_t aimpProfile[MAX_PATH * 2] = {};
+        _snwprintf_s(
+            aimpProfile,
+            _countof(aimpProfile),
+            _TRUNCATE,
+            L"%ls\\AIMP",
+            baseDirectory);
+        if (LoggerOpenInBaseDirectory(aimpProfile)) {
+            return;
+        }
     }
-    wcscpy_s(g_logPath, localAppData);
-    const size_t pathLength = wcslen(g_logPath);
-    if (pathLength > 0 && g_logPath[pathLength - 1] != L'\\') {
-        wcscat_s(g_logPath, L"\\");
-    }
-    wcscat_s(g_logPath, L"AIMP-ETS2-Cast");
-    CreateDirectoryW(g_logPath, nullptr);
-    wcscat_s(g_logPath, L"\\ets2cast.log");
 
-    g_logFile = CreateFileW(
-        g_logPath,
-        FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
-    if (g_logFile == INVALID_HANDLE_VALUE) {
-        if (GetModuleFileNameW(g_moduleInstance, g_logPath, _countof(g_logPath))) {
-            wchar_t *slash = wcsrchr(g_logPath, L'\\');
-            if (slash) {
-                slash[1] = L'\0';
-                wcscat_s(g_logPath, L"ets2cast.log");
-                g_logFile = CreateFileW(
-                    g_logPath,
-                    FILE_APPEND_DATA,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    nullptr,
-                    OPEN_ALWAYS,
-                    FILE_ATTRIBUTE_NORMAL,
-                    nullptr);
+    count = GetEnvironmentVariableW(L"LOCALAPPDATA", baseDirectory, MAX_PATH);
+    if (count > 0 && count < MAX_PATH && LoggerOpenInBaseDirectory(baseDirectory)) {
+        return;
+    }
+
+    wchar_t userProfile[MAX_PATH] = {};
+    count = GetEnvironmentVariableW(L"USERPROFILE", userProfile, MAX_PATH);
+    if (count > 0 && count < MAX_PATH) {
+        _snwprintf_s(
+            baseDirectory,
+            _countof(baseDirectory),
+            _TRUNCATE,
+            L"%ls\\AppData\\Local",
+            userProfile);
+        if (LoggerOpenInBaseDirectory(baseDirectory)) {
+            return;
+        }
+    }
+
+    if (GetTempPathW(MAX_PATH, baseDirectory) > 0 && LoggerOpenInBaseDirectory(baseDirectory)) {
+        return;
+    }
+
+    wchar_t modulePath[MAX_PATH * 2] = {};
+    if (GetModuleFileNameW(g_moduleInstance, modulePath, _countof(modulePath))) {
+        wchar_t *slash = wcsrchr(modulePath, L'\\');
+        if (slash) {
+            slash[1] = L'\0';
+            wcscat_s(modulePath, L"ets2cast.log");
+            if (LoggerOpenExactPath(modulePath)) {
+                return;
             }
         }
     }
+    OutputDebugStringW(L"AIMP ETS2 Cast: unable to open ets2cast.log\n");
 }
 
 void LoggerShutdown() {
@@ -156,6 +223,17 @@ struct EncodedBlock {
     EncodedBlock *next;
     DWORD byteCount;
     unsigned char data[1];
+};
+
+struct ClientConnection {
+    SOCKET socketValue;
+    bool icyMetadata;
+    size_t bytesUntilMetadata;
+    unsigned char *pendingData;
+    size_t pendingOffset;
+    size_t pendingBytes;
+    size_t pendingCapacity;
+    bool backpressureLogged;
 };
 
 using lame_t = void *;
@@ -210,6 +288,10 @@ public:
           prebufferTail_(nullptr),
           prebufferBytes_(0),
           prebufferReady_(false),
+          metadataMapping_(nullptr),
+          metadataView_(nullptr),
+          lastMetadataRefreshTick_(0),
+          metadataUnavailableLogged_(false),
           winsockReady_(false),
           lameModule_(nullptr),
           ownsLameModule_(false),
@@ -226,8 +308,16 @@ public:
           firstMp3FrameTick_(0) {
         ZeroMemory(&lame_, sizeof(lame_));
         ZeroMemory(errorText_, sizeof(errorText_));
+        ZeroMemory(streamTitle_, sizeof(streamTitle_));
         for (int i = 0; i < kMaxClients; ++i) {
-            clients_[i] = INVALID_SOCKET;
+            clients_[i].socketValue = INVALID_SOCKET;
+            clients_[i].icyMetadata = false;
+            clients_[i].bytesUntilMetadata = kIcyMetadataInterval;
+            clients_[i].pendingData = nullptr;
+            clients_[i].pendingOffset = 0;
+            clients_[i].pendingBytes = 0;
+            clients_[i].pendingCapacity = 0;
+            clients_[i].backpressureLogged = false;
         }
         InitializeCriticalSection(&queueLock_);
         InitializeCriticalSection(&clientsLock_);
@@ -241,6 +331,7 @@ public:
     ~CastEngine() {
         Stop();
         CloseEncoder(false);
+        CloseMetadataMapping();
         if (ownsLameModule_ && lameModule_) {
             FreeLibrary(lameModule_);
         }
@@ -331,6 +422,9 @@ public:
         silenceFillStartedTick_ = 0;
         silenceFramesInjected_ = 0;
         silenceFillActive_ = false;
+        lastMetadataRefreshTick_ = 0;
+        metadataUnavailableLogged_ = false;
+        streamTitle_[0] = '\0';
         listenSocket_ = listener;
         ResetEvent(stopEvent_);
         ResetEvent(queueEvent_);
@@ -548,6 +642,237 @@ private:
         LeaveCriticalSection(&stateLock_);
         InterlockedExchange(&state_, kStateError);
         LoggerWrite("ERROR: %s; code=%lu", message, static_cast<unsigned long>(code));
+    }
+
+    void CloseMetadataMapping() {
+        if (metadataView_) {
+            UnmapViewOfFile(metadataView_);
+            metadataView_ = nullptr;
+        }
+        if (metadataMapping_) {
+            CloseHandle(metadataMapping_);
+            metadataMapping_ = nullptr;
+        }
+    }
+
+    bool EnsureMetadataMapping() {
+        if (metadataView_) {
+            return true;
+        }
+
+        wchar_t mappingName[128] = {};
+        const DWORD overrideLength = GetEnvironmentVariableW(
+            L"AIMP_ETS2_CAST_REMOTE_INFO_NAME",
+            mappingName,
+            static_cast<DWORD>(_countof(mappingName)));
+        if (overrideLength == 0 || overrideLength >= _countof(mappingName)) {
+            wcscpy_s(mappingName, ets2cast::kAimpRemoteInfoName);
+        }
+
+        metadataMapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, mappingName);
+        if (!metadataMapping_) {
+            if (!metadataUnavailableLogged_) {
+                LoggerWrite(
+                    "AIMP metadata mapping unavailable; name=%ls code=%lu",
+                    mappingName,
+                    static_cast<unsigned long>(GetLastError()));
+                metadataUnavailableLogged_ = true;
+            }
+            return false;
+        }
+        metadataView_ = static_cast<const unsigned char *>(MapViewOfFile(
+            metadataMapping_,
+            FILE_MAP_READ,
+            0,
+            0,
+            ets2cast::kAimpRemoteInfoBytes));
+        if (!metadataView_) {
+            const DWORD code = GetLastError();
+            CloseHandle(metadataMapping_);
+            metadataMapping_ = nullptr;
+            if (!metadataUnavailableLogged_) {
+                LoggerWrite("AIMP metadata mapping view failed; code=%lu", static_cast<unsigned long>(code));
+                metadataUnavailableLogged_ = true;
+            }
+            return false;
+        }
+        metadataUnavailableLogged_ = false;
+        LoggerWrite("AIMP metadata mapping opened; name=%ls", mappingName);
+        return true;
+    }
+
+    static bool ReadRemoteWideField(
+        const unsigned char *snapshot,
+        size_t snapshotBytes,
+        size_t *offset,
+        DWORD characterCount,
+        wchar_t *target,
+        size_t targetCount) {
+        if (!snapshot || !offset) {
+            return false;
+        }
+        const uint64_t bytes64 = static_cast<uint64_t>(characterCount) * sizeof(wchar_t);
+        if (bytes64 > snapshotBytes || *offset > snapshotBytes - static_cast<size_t>(bytes64)) {
+            return false;
+        }
+        if (target && targetCount > 0) {
+            size_t copyCount = static_cast<size_t>(characterCount);
+            if (copyCount >= targetCount) {
+                copyCount = targetCount - 1;
+            }
+            if (copyCount > 0) {
+                CopyMemory(target, snapshot + *offset, copyCount * sizeof(wchar_t));
+            }
+            target[copyCount] = L'\0';
+        }
+        *offset += static_cast<size_t>(bytes64);
+        return true;
+    }
+
+    static void FileNameToTitle(wchar_t *fileName) {
+        if (!fileName || !fileName[0]) {
+            return;
+        }
+        wchar_t *base = fileName;
+        for (wchar_t *cursor = fileName; *cursor; ++cursor) {
+            if (*cursor == L'\\' || *cursor == L'/') {
+                base = cursor + 1;
+            }
+        }
+        if (base != fileName) {
+            MoveMemory(fileName, base, (wcslen(base) + 1) * sizeof(wchar_t));
+        }
+        wchar_t *extension = wcsrchr(fileName, L'.');
+        if (extension && extension != fileName) {
+            *extension = L'\0';
+        }
+    }
+
+    static bool BuildStreamTitleUtf8(
+        const unsigned char *snapshot,
+        size_t snapshotBytes,
+        char *target,
+        size_t targetCount) {
+        if (!snapshot || snapshotBytes < sizeof(ets2cast::AimpRemoteFileInfoPrefix) || !target || targetCount == 0) {
+            return false;
+        }
+        target[0] = '\0';
+        ets2cast::AimpRemoteFileInfoPrefix info = {};
+        CopyMemory(&info, snapshot, sizeof(info));
+        if (info.cbSizeOf < sizeof(info) || info.cbSizeOf > snapshotBytes) {
+            return false;
+        }
+        const uint64_t totalCharacters =
+            static_cast<uint64_t>(info.albumLength) +
+            static_cast<uint64_t>(info.artistLength) +
+            static_cast<uint64_t>(info.dateLength) +
+            static_cast<uint64_t>(info.fileNameLength) +
+            static_cast<uint64_t>(info.genreLength) +
+            static_cast<uint64_t>(info.titleLength);
+        const uint64_t availableCharacters = (snapshotBytes - info.cbSizeOf) / sizeof(wchar_t);
+        if (totalCharacters > availableCharacters) {
+            return false;
+        }
+
+        wchar_t artist[256] = {};
+        wchar_t title[512] = {};
+        wchar_t fileName[768] = {};
+        size_t offset = info.cbSizeOf;
+        if (!ReadRemoteWideField(snapshot, snapshotBytes, &offset, info.albumLength, nullptr, 0) ||
+            !ReadRemoteWideField(snapshot, snapshotBytes, &offset, info.artistLength, artist, _countof(artist)) ||
+            !ReadRemoteWideField(snapshot, snapshotBytes, &offset, info.dateLength, nullptr, 0) ||
+            !ReadRemoteWideField(snapshot, snapshotBytes, &offset, info.fileNameLength, fileName, _countof(fileName)) ||
+            !ReadRemoteWideField(snapshot, snapshotBytes, &offset, info.genreLength, nullptr, 0) ||
+            !ReadRemoteWideField(snapshot, snapshotBytes, &offset, info.titleLength, title, _countof(title))) {
+            return false;
+        }
+
+        FileNameToTitle(fileName);
+        wchar_t combined[768] = {};
+        if (artist[0] && title[0]) {
+            _snwprintf_s(combined, _countof(combined), _TRUNCATE, L"%ls - %ls", artist, title);
+        } else if (title[0]) {
+            wcscpy_s(combined, title);
+        } else if (fileName[0]) {
+            wcscpy_s(combined, fileName);
+        } else {
+            return true;
+        }
+
+        for (wchar_t *cursor = combined; *cursor; ++cursor) {
+            if (*cursor < L' ' || *cursor == 0x7f) {
+                *cursor = L' ';
+            } else if (*cursor == L'\'') {
+                *cursor = 0x2019;
+            }
+        }
+        const int converted = WideCharToMultiByte(
+            CP_UTF8,
+            WC_ERR_INVALID_CHARS,
+            combined,
+            -1,
+            target,
+            static_cast<int>(targetCount),
+            nullptr,
+            nullptr);
+        if (converted <= 0) {
+            target[0] = '\0';
+            return false;
+        }
+        target[targetCount - 1] = '\0';
+        return true;
+    }
+
+    void RefreshMetadataLocked() {
+        const ULONGLONG now = GetTickCount64();
+        if (lastMetadataRefreshTick_ != 0 && now - lastMetadataRefreshTick_ < kMetadataRefreshMilliseconds) {
+            return;
+        }
+        lastMetadataRefreshTick_ = now;
+        if (!EnsureMetadataMapping()) {
+            return;
+        }
+
+        unsigned char snapshot[ets2cast::kAimpRemoteInfoBytes];
+        CopyMemory(snapshot, metadataView_, sizeof(snapshot));
+        char updated[kMaxStreamTitleBytes] = {};
+        if (!BuildStreamTitleUtf8(snapshot, sizeof(snapshot), updated, sizeof(updated))) {
+            return;
+        }
+        if (strcmp(updated, streamTitle_) != 0) {
+            strcpy_s(streamTitle_, updated);
+            if (streamTitle_[0]) {
+                LoggerWrite("ICY metadata updated; stream_title=%s", streamTitle_);
+            } else {
+                LoggerWrite("ICY metadata cleared");
+            }
+        }
+    }
+
+    size_t BuildIcyMetadataBlockLocked(unsigned char *target, size_t targetCount) const {
+        if (!target || targetCount == 0) {
+            return 0;
+        }
+        if (!streamTitle_[0]) {
+            target[0] = 0;
+            return 1;
+        }
+        char text[kMaxStreamTitleBytes + 32] = {};
+        _snprintf_s(text, sizeof(text), _TRUNCATE, "StreamTitle='%s';", streamTitle_);
+        size_t textLength = strlen(text);
+        size_t units = (textLength + 15u) / 16u;
+        if (units > 255u) {
+            units = 255u;
+            textLength = units * 16u;
+        }
+        const size_t paddedLength = units * 16u;
+        if (targetCount < paddedLength + 1u) {
+            return 0;
+        }
+        target[0] = static_cast<unsigned char>(units);
+        ZeroMemory(target + 1, paddedLength);
+        CopyMemory(target + 1, text, textLength);
+        return paddedLength + 1u;
     }
 
     static bool ContainsValidMp3Frame(const unsigned char *data, int length) {
@@ -910,6 +1235,61 @@ private:
         return true;
     }
 
+    static bool HeaderRequestsIcyMetadata(const char *request) {
+        const char headerName[] = "Icy-MetaData:";
+        const size_t headerNameLength = sizeof(headerName) - 1;
+        const char *line = request;
+        while (line && *line) {
+            const char *end = strstr(line, "\r\n");
+            const size_t length = end ? static_cast<size_t>(end - line) : strlen(line);
+            if (length >= headerNameLength && _strnicmp(line, headerName, headerNameLength) == 0) {
+                const char *value = line + headerNameLength;
+                while (value < line + length && (*value == ' ' || *value == '\t')) {
+                    ++value;
+                }
+                return value < line + length && *value == '1';
+            }
+            line = end ? end + 2 : nullptr;
+        }
+        return false;
+    }
+
+    static void CopyHeaderValue(
+        const char *request,
+        const char *headerName,
+        char *target,
+        size_t targetCount) {
+        if (!target || targetCount == 0) {
+            return;
+        }
+        target[0] = '\0';
+        const size_t headerNameLength = strlen(headerName);
+        const char *line = request;
+        while (line && *line) {
+            const char *end = strstr(line, "\r\n");
+            const size_t length = end ? static_cast<size_t>(end - line) : strlen(line);
+            if (length >= headerNameLength && _strnicmp(line, headerName, headerNameLength) == 0) {
+                const char *value = line + headerNameLength;
+                while (value < line + length && (*value == ' ' || *value == '\t')) {
+                    ++value;
+                }
+                size_t copyCount = static_cast<size_t>((line + length) - value);
+                if (copyCount >= targetCount) {
+                    copyCount = targetCount - 1;
+                }
+                memcpy(target, value, copyCount);
+                target[copyCount] = '\0';
+                for (char *cursor = target; *cursor; ++cursor) {
+                    if (static_cast<unsigned char>(*cursor) < 0x20 || *cursor == 0x7f) {
+                        *cursor = ' ';
+                    }
+                }
+                return;
+            }
+            line = end ? end + 2 : nullptr;
+        }
+    }
+
     DWORD ServerThread() {
         LoggerWrite("HTTP worker started");
         while (InterlockedCompareExchange(&running_, 0, 0) != 0) {
@@ -994,23 +1374,52 @@ private:
             return;
         }
 
-        const char response[] =
-            "HTTP/1.0 200 OK\r\n"
-            "Content-Type: audio/mpeg\r\n"
-            "Cache-Control: no-cache, no-store\r\n"
-            "Pragma: no-cache\r\n"
-            "Connection: close\r\n"
-            "icy-name: AIMP Local\r\n"
-            "icy-description: AIMP ETS2 Cast\r\n"
-            "icy-br: 256\r\n"
-            "icy-genre: Local\r\n\r\n";
-        if (!SendAll(client, response, static_cast<int>(sizeof(response) - 1))) {
+        const bool icyMetadata = HeaderRequestsIcyMetadata(request);
+        char userAgent[192] = {};
+        CopyHeaderValue(request, "User-Agent:", userAgent, sizeof(userAgent));
+        LoggerWrite(
+            "HTTP request accepted; icy_metadata=%d user_agent=%s",
+            icyMetadata ? 1 : 0,
+            userAgent[0] ? userAgent : "(none)");
+
+        char response[768] = {};
+        const int responseLength = icyMetadata
+            ? _snprintf_s(
+                response,
+                sizeof(response),
+                _TRUNCATE,
+                "HTTP/1.0 200 OK\r\n"
+                "Content-Type: audio/mpeg\r\n"
+                "Cache-Control: no-cache, no-store\r\n"
+                "Pragma: no-cache\r\n"
+                "Connection: close\r\n"
+                u8"icy-name: Дальнобой FM\r\n"
+                "icy-description: AIMP ETS2 Cast\r\n"
+                "icy-br: 256\r\n"
+                "icy-genre: Local\r\n"
+                "icy-charset: UTF-8\r\n"
+                "icy-metaint: %llu\r\n\r\n",
+                static_cast<unsigned long long>(kIcyMetadataInterval))
+            : _snprintf_s(
+                response,
+                sizeof(response),
+                _TRUNCATE,
+                "HTTP/1.0 200 OK\r\n"
+                "Content-Type: audio/mpeg\r\n"
+                "Cache-Control: no-cache, no-store\r\n"
+                "Pragma: no-cache\r\n"
+                "Connection: close\r\n"
+                u8"icy-name: Дальнобой FM\r\n"
+                "icy-description: AIMP ETS2 Cast\r\n"
+                "icy-br: 256\r\n"
+                "icy-genre: Local\r\n\r\n");
+        if (responseLength <= 0 || !SendAll(client, response, responseLength)) {
             LoggerWrite("HTTP response send failed; winsock_error=%d", WSAGetLastError());
             closesocket(client);
             return;
         }
 
-        if (!AddClient(client)) {
+        if (!AddClient(client, icyMetadata)) {
             closesocket(client);
             LoggerWrite("listener not registered; connection closed; listener_limit=%d", kMaxClients);
         }
@@ -1069,44 +1478,300 @@ private:
         return true;
     }
 
+    static void ReleaseClientPending(ClientConnection *client) {
+        if (!client) {
+            return;
+        }
+        if (client->pendingData) {
+            HeapFree(GetProcessHeap(), 0, client->pendingData);
+        }
+        client->pendingData = nullptr;
+        client->pendingOffset = 0;
+        client->pendingBytes = 0;
+        client->pendingCapacity = 0;
+        client->backpressureLogged = false;
+    }
+
+    static bool AppendClientPending(
+        ClientConnection *client,
+        const unsigned char *data,
+        size_t length) {
+        if (!client || !data || length == 0) {
+            return length == 0;
+        }
+        if (client->pendingBytes > kMaxClientPendingBytes ||
+            length > kMaxClientPendingBytes - client->pendingBytes) {
+            return false;
+        }
+
+        if (client->pendingOffset > 0 &&
+            client->pendingOffset + client->pendingBytes + length > client->pendingCapacity) {
+            MoveMemory(client->pendingData, client->pendingData + client->pendingOffset, client->pendingBytes);
+            client->pendingOffset = 0;
+        }
+
+        const size_t required = client->pendingOffset + client->pendingBytes + length;
+        if (required > client->pendingCapacity) {
+            size_t capacity = client->pendingCapacity > 0
+                ? client->pendingCapacity
+                : kInitialClientPendingBytes;
+            while (capacity < required && capacity < kMaxClientPendingBytes) {
+                const size_t doubled = capacity * 2u;
+                capacity = doubled > kMaxClientPendingBytes ? kMaxClientPendingBytes : doubled;
+            }
+            if (capacity < required) {
+                return false;
+            }
+            void *resized = client->pendingData
+                ? HeapReAlloc(GetProcessHeap(), 0, client->pendingData, capacity)
+                : HeapAlloc(GetProcessHeap(), 0, capacity);
+            if (!resized) {
+                return false;
+            }
+            client->pendingData = static_cast<unsigned char *>(resized);
+            client->pendingCapacity = capacity;
+        }
+
+        CopyMemory(
+            client->pendingData + client->pendingOffset + client->pendingBytes,
+            data,
+            length);
+        client->pendingBytes += length;
+        return true;
+    }
+
+    bool FlushClientPendingNonBlocking(
+        ClientConnection *client,
+        int *sentBytes,
+        int *failureCode) {
+        while (client->pendingBytes > 0) {
+            const int requestBytes = client->pendingBytes > static_cast<size_t>(INT_MAX)
+                ? INT_MAX
+                : static_cast<int>(client->pendingBytes);
+            const int sent = send(
+                client->socketValue,
+                reinterpret_cast<const char *>(client->pendingData + client->pendingOffset),
+                requestBytes,
+                0);
+            if (sent > 0) {
+                client->pendingOffset += static_cast<size_t>(sent);
+                client->pendingBytes -= static_cast<size_t>(sent);
+                if (sentBytes) {
+                    *sentBytes += sent;
+                }
+                continue;
+            }
+            const int error = sent == SOCKET_ERROR ? WSAGetLastError() : WSAECONNRESET;
+            if (error == WSAEWOULDBLOCK) {
+                return true;
+            }
+            if (failureCode) {
+                *failureCode = error;
+            }
+            return false;
+        }
+        client->pendingOffset = 0;
+        if (client->backpressureLogged) {
+            LoggerWrite("listener backpressure recovered; pending_bytes=0");
+            client->backpressureLogged = false;
+        }
+        return true;
+    }
+
+    bool QueueClientRemainder(
+        ClientConnection *client,
+        const unsigned char *data,
+        size_t length,
+        int *failureCode) {
+        if (!AppendClientPending(client, data, length)) {
+            if (failureCode) {
+                *failureCode = WSAENOBUFS;
+            }
+            return false;
+        }
+        if (!client->backpressureLogged) {
+            LoggerWrite(
+                "listener backpressure; queued_bytes=%llu max_bytes=%llu",
+                static_cast<unsigned long long>(client->pendingBytes),
+                static_cast<unsigned long long>(kMaxClientPendingBytes));
+            client->backpressureLogged = true;
+        }
+        return true;
+    }
+
+    bool SendClientBytes(
+        ClientConnection *client,
+        const unsigned char *data,
+        int length,
+        bool blocking,
+        int *sentBytes,
+        int *failureCode) {
+        if (!client || client->socketValue == INVALID_SOCKET || !data || length <= 0) {
+            return false;
+        }
+        if (blocking) {
+            if (SendAll(client->socketValue, reinterpret_cast<const char *>(data), length)) {
+                if (sentBytes) {
+                    *sentBytes += length;
+                }
+                return true;
+            }
+            if (failureCode) {
+                *failureCode = WSAGetLastError();
+            }
+            return false;
+        }
+
+        if (!FlushClientPendingNonBlocking(client, sentBytes, failureCode)) {
+            return false;
+        }
+        if (client->pendingBytes > 0) {
+            return QueueClientRemainder(
+                client,
+                data,
+                static_cast<size_t>(length),
+                failureCode);
+        }
+
+        const int sent = send(client->socketValue, reinterpret_cast<const char *>(data), length, 0);
+        if (sentBytes && sent > 0) {
+            *sentBytes += sent;
+        }
+        if (sent == length) {
+            return true;
+        }
+        if (sent > 0) {
+            return QueueClientRemainder(
+                client,
+                data + sent,
+                static_cast<size_t>(length - sent),
+                failureCode);
+        }
+        const int error = sent == SOCKET_ERROR ? WSAGetLastError() : WSAECONNRESET;
+        if (error == WSAEWOULDBLOCK) {
+            return QueueClientRemainder(
+                client,
+                data,
+                static_cast<size_t>(length),
+                failureCode);
+        }
+        if (failureCode) {
+            *failureCode = error;
+        }
+        return false;
+    }
+
+    bool SendAudioToClientLocked(
+        ClientConnection *client,
+        const unsigned char *data,
+        int length,
+        bool blocking,
+        int *sentBytes,
+        int *failureCode) {
+        if (!client->icyMetadata) {
+            return SendClientBytes(client, data, length, blocking, sentBytes, failureCode);
+        }
+        int offset = 0;
+        while (offset < length) {
+            const size_t remaining = static_cast<size_t>(length - offset);
+            const size_t audioChunk = remaining < client->bytesUntilMetadata
+                ? remaining
+                : client->bytesUntilMetadata;
+            if (audioChunk > 0) {
+                if (!SendClientBytes(
+                        client,
+                        data + offset,
+                        static_cast<int>(audioChunk),
+                        blocking,
+                        sentBytes,
+                        failureCode)) {
+                    return false;
+                }
+                offset += static_cast<int>(audioChunk);
+                client->bytesUntilMetadata -= audioChunk;
+            }
+            if (client->bytesUntilMetadata == 0) {
+                unsigned char metadata[kMaxStreamTitleBytes + 64] = {};
+                const size_t metadataBytes = BuildIcyMetadataBlockLocked(metadata, sizeof(metadata));
+                if (metadataBytes == 0 || !SendClientBytes(
+                        client,
+                        metadata,
+                        static_cast<int>(metadataBytes),
+                        blocking,
+                        sentBytes,
+                        failureCode)) {
+                    return false;
+                }
+                client->bytesUntilMetadata = kIcyMetadataInterval;
+            }
+        }
+        return true;
+    }
+
     void SendToClientsLocked(const unsigned char *data, int length) {
         int index = 0;
         while (index < clientCount_) {
-            const int sent = send(clients_[index], reinterpret_cast<const char *>(data), length, 0);
-            if (sent != length) {
-                const int error = sent == SOCKET_ERROR ? WSAGetLastError() : 0;
-                shutdown(clients_[index], SD_BOTH);
-                closesocket(clients_[index]);
+            int sentBytes = 0;
+            int error = 0;
+            if (!SendAudioToClientLocked(&clients_[index], data, length, false, &sentBytes, &error)) {
+                const bool icyMetadata = clients_[index].icyMetadata;
+                shutdown(clients_[index].socketValue, SD_BOTH);
+                closesocket(clients_[index].socketValue);
+                ReleaseClientPending(&clients_[index]);
                 for (int move = index; move + 1 < clientCount_; ++move) {
                     clients_[move] = clients_[move + 1];
                 }
-                clients_[clientCount_ - 1] = INVALID_SOCKET;
+                clients_[clientCount_ - 1].socketValue = INVALID_SOCKET;
+                clients_[clientCount_ - 1].icyMetadata = false;
+                clients_[clientCount_ - 1].bytesUntilMetadata = kIcyMetadataInterval;
+                clients_[clientCount_ - 1].pendingData = nullptr;
+                clients_[clientCount_ - 1].pendingOffset = 0;
+                clients_[clientCount_ - 1].pendingBytes = 0;
+                clients_[clientCount_ - 1].pendingCapacity = 0;
+                clients_[clientCount_ - 1].backpressureLogged = false;
                 --clientCount_;
                 LoggerWrite(
-                    "listener disconnected; listeners=%d sent=%d requested=%d winsock_error=%d",
+                    "listener disconnected; listeners=%d sent=%d requested=%d winsock_error=%d icy_metadata=%d",
                     clientCount_,
-                    sent,
+                    sentBytes,
                     length,
-                    error);
+                    error,
+                    icyMetadata ? 1 : 0);
                 continue;
             }
             ++index;
         }
     }
 
-    bool AddClient(SOCKET client) {
+    bool AddClient(SOCKET client, bool icyMetadata) {
         bool added = false;
         bool ready = false;
         size_t prebufferSent = 0;
         int failureCode = 0;
         EnterCriticalSection(&clientsLock_);
+        RefreshMetadataLocked();
         ready = prebufferReady_;
         if (clientCount_ < kMaxClients) {
+            ClientConnection candidate = {};
+            candidate.socketValue = client;
+            candidate.icyMetadata = icyMetadata;
+            candidate.bytesUntilMetadata = kIcyMetadataInterval;
+            candidate.pendingData = nullptr;
+            candidate.pendingOffset = 0;
+            candidate.pendingBytes = 0;
+            candidate.pendingCapacity = 0;
+            candidate.backpressureLogged = false;
             bool sendReady = true;
             if (prebufferReady_) {
                 for (EncodedBlock *block = prebufferHead_; block; block = block->next) {
-                    if (!SendAll(client, reinterpret_cast<const char *>(block->data), static_cast<int>(block->byteCount))) {
-                        failureCode = WSAGetLastError();
+                    int bytesSent = 0;
+                    if (!SendAudioToClientLocked(
+                            &candidate,
+                            block->data,
+                            static_cast<int>(block->byteCount),
+                            true,
+                            &bytesSent,
+                            &failureCode)) {
                         sendReady = false;
                         break;
                     }
@@ -1115,20 +1780,24 @@ private:
             }
             u_long nonBlocking = 1;
             if (sendReady && ioctlsocket(client, FIONBIO, &nonBlocking) == 0) {
-                clients_[clientCount_++] = client;
+                clients_[clientCount_++] = candidate;
                 added = true;
             } else if (sendReady) {
                 failureCode = WSAGetLastError();
+            }
+            if (!added) {
+                ReleaseClientPending(&candidate);
             }
         }
         const int count = clientCount_;
         LeaveCriticalSection(&clientsLock_);
         if (added) {
             LoggerWrite(
-                "listener connected; listeners=%d prebuffer_ready=%d prebuffer_bytes_sent=%llu",
+                "listener connected; listeners=%d prebuffer_ready=%d prebuffer_bytes_sent=%llu icy_metadata=%d",
                 count,
                 ready ? 1 : 0,
-                static_cast<unsigned long long>(prebufferSent));
+                static_cast<unsigned long long>(prebufferSent),
+                icyMetadata ? 1 : 0);
         } else if (failureCode != 0) {
             LoggerWrite("listener prebuffer/send setup failed; winsock_error=%d", failureCode);
         }
@@ -1140,6 +1809,7 @@ private:
             return;
         }
         EnterCriticalSection(&clientsLock_);
+        RefreshMetadataLocked();
         const bool buffered = AppendPrebufferLocked(data, length);
         if (!prebufferReady_) {
             if (buffered && prebufferBytes_ >= kPrebufferTargetBytes) {
@@ -1165,10 +1835,13 @@ private:
     void CloseAllClients() {
         EnterCriticalSection(&clientsLock_);
         for (int i = 0; i < clientCount_; ++i) {
-            if (clients_[i] != INVALID_SOCKET) {
-                shutdown(clients_[i], SD_BOTH);
-                closesocket(clients_[i]);
-                clients_[i] = INVALID_SOCKET;
+            if (clients_[i].socketValue != INVALID_SOCKET) {
+                shutdown(clients_[i].socketValue, SD_BOTH);
+                closesocket(clients_[i].socketValue);
+                ReleaseClientPending(&clients_[i]);
+                clients_[i].socketValue = INVALID_SOCKET;
+                clients_[i].icyMetadata = false;
+                clients_[i].bytesUntilMetadata = kIcyMetadataInterval;
             }
         }
         if (clientCount_ > 0) {
@@ -1196,12 +1869,17 @@ private:
     size_t queueBytes_;
     volatile LONG droppedBlocks_;
     volatile LONG handshakeThreads_;
-    SOCKET clients_[kMaxClients];
+    ClientConnection clients_[kMaxClients];
     int clientCount_;
     EncodedBlock *prebufferHead_;
     EncodedBlock *prebufferTail_;
     size_t prebufferBytes_;
     bool prebufferReady_;
+    HANDLE metadataMapping_;
+    const unsigned char *metadataView_;
+    ULONGLONG lastMetadataRefreshTick_;
+    bool metadataUnavailableLogged_;
+    char streamTitle_[kMaxStreamTitleBytes];
     bool winsockReady_;
     HMODULE lameModule_;
     bool ownsLameModule_;
@@ -1421,7 +2099,7 @@ void __cdecl DspConfig(winampDSPModule *module) {
 
 int __cdecl DspInit(winampDSPModule *module) {
     LoggerInitialize();
-    LoggerWrite("plugin init; name=AIMP ETS2 Cast version=0.1.2-rc1 architecture=%u-bit", static_cast<unsigned>(sizeof(void *) * 8));
+    LoggerWrite("plugin init; name=AIMP ETS2 Cast version=0.1.2 architecture=%u-bit", static_cast<unsigned>(sizeof(void *) * 8));
     if (!module) {
         LoggerWrite("plugin init failed; null module");
         return 1;

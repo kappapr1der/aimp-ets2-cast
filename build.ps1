@@ -46,7 +46,7 @@ if ($LASTEXITCODE -ne 0) { throw "Build failed: $LASTEXITCODE" }
 & $ctest --test-dir $buildDir --output-on-failure
 if ($LASTEXITCODE -ne 0) { throw "Tests failed: $LASTEXITCODE" }
 
-$version = "0.1.2-rc1"
+$version = "0.1.2"
 $distDir = Join-Path $projectRoot "dist"
 $manualRoot = Join-Path $buildDir "manual-package"
 $manualPluginDir = Join-Path $manualRoot "aimp_ets2_cast"
@@ -57,6 +57,7 @@ if (Test-Path -LiteralPath $manualRoot) {
 New-Item -ItemType Directory -Path $manualPluginDir -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $buildDir "bin\aimp_ets2_cast.dll") -Destination $manualPluginDir -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "packaging\README.txt") -Destination $manualPluginDir -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot "packaging\README_EN.txt") -Destination $manualPluginDir -Force
 
 $packageRoot = Join-Path $buildDir "package"
 $packagePluginDir = Join-Path $packageRoot "aimp_ets2_cast"
@@ -67,6 +68,7 @@ if (Test-Path -LiteralPath $packageRoot) {
 New-Item -ItemType Directory -Path $packageX64Dir -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $buildDir "bin\aimp_ets2_cast.dll") -Destination $packageX64Dir -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "packaging\README.txt") -Destination $packagePluginDir -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot "packaging\README_EN.txt") -Destination $packagePluginDir -Force
 $packageZip = Join-Path $buildDir "aimp_ets2_cast-package.zip"
 $packageAimp = Join-Path $distDir "aimp_ets2_cast-$version.aimppack"
 if (Test-Path -LiteralPath $packageZip) {

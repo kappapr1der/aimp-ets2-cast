@@ -23,7 +23,7 @@ BEGIN
             VALUE "InternalName", "aimp_ets2_cast\0"
             VALUE "OriginalFilename", "aimp_ets2_cast.dll\0"
             VALUE "ProductName", "AIMP ETS2 Cast\0"
-            VALUE "ProductVersion", "0.1.2-rc1\0"
+            VALUE "ProductVersion", "0.1.2\0"
         END
     END
     BLOCK "VarFileInfo"

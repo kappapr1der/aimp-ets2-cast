@@ -3,7 +3,9 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
+#include "aimp_remote_info.h"
 #include "winamp_dsp.h"
 
 using TestStartProc = int (__cdecl *)(void);
@@ -24,25 +26,97 @@ static void WaitUntil(LONGLONG deadline) {
     }
 }
 
+static bool WriteRemoteInfo(
+    unsigned char *mappingView,
+    const wchar_t *artist,
+    const wchar_t *title,
+    const wchar_t *fileName) {
+    if (!mappingView || !artist || !title || !fileName) {
+        return false;
+    }
+    ZeroMemory(mappingView, ets2cast::kAimpRemoteInfoBytes);
+    auto *info = reinterpret_cast<ets2cast::AimpRemoteFileInfoPrefix *>(mappingView);
+    // AIMP's packed structure includes six native pointer fields. They are not
+    // used across the mapping, but cbSizeOf includes them before the strings.
+    info->cbSizeOf = static_cast<DWORD>(sizeof(*info) + 6u * sizeof(void *));
+    info->active = TRUE;
+    info->bitRate = 256;
+    info->channels = 2;
+    info->duration = 180000;
+    info->fileSize = 12345678;
+    info->sampleRate = 48000;
+    info->trackId = 1;
+    info->artistLength = static_cast<DWORD>(wcslen(artist));
+    info->fileNameLength = static_cast<DWORD>(wcslen(fileName));
+    info->titleLength = static_cast<DWORD>(wcslen(title));
+
+    const size_t totalCharacters =
+        static_cast<size_t>(info->artistLength) +
+        static_cast<size_t>(info->fileNameLength) +
+        static_cast<size_t>(info->titleLength);
+    if (info->cbSizeOf + totalCharacters * sizeof(wchar_t) > ets2cast::kAimpRemoteInfoBytes) {
+        return false;
+    }
+    unsigned char *cursor = mappingView + info->cbSizeOf;
+    CopyMemory(cursor, artist, info->artistLength * sizeof(wchar_t));
+    cursor += info->artistLength * sizeof(wchar_t);
+    CopyMemory(cursor, fileName, info->fileNameLength * sizeof(wchar_t));
+    cursor += info->fileNameLength * sizeof(wchar_t);
+    CopyMemory(cursor, title, info->titleLength * sizeof(wchar_t));
+    return true;
+}
+
 int wmain(int argc, wchar_t **argv) {
     if (argc < 2) {
         fwprintf(stderr, L"Usage: dsp_host_smoke.exe <plugin.dll> [seconds] [libLAME.dll]\n");
         return 2;
     }
     const int seconds = argc >= 3 ? _wtoi(argv[2]) : 18;
+
+    wchar_t mappingName[128] = {};
+    _snwprintf_s(
+        mappingName,
+        _countof(mappingName),
+        _TRUNCATE,
+        L"Local\\AIMP_ETS2_Cast_Test_RemoteInfo_%lu",
+        static_cast<unsigned long>(GetCurrentProcessId()));
+    HANDLE metadataMapping = CreateFileMappingW(
+        INVALID_HANDLE_VALUE,
+        nullptr,
+        PAGE_READWRITE,
+        0,
+        static_cast<DWORD>(ets2cast::kAimpRemoteInfoBytes),
+        mappingName);
+    unsigned char *metadataView = metadataMapping
+        ? static_cast<unsigned char *>(MapViewOfFile(
+            metadataMapping,
+            FILE_MAP_ALL_ACCESS,
+            0,
+            0,
+            ets2cast::kAimpRemoteInfoBytes))
+        : nullptr;
+    if (!metadataMapping || !metadataView ||
+        !WriteRemoteInfo(metadataView, L"Test Artist", L"First Track", L"C:\\Music\\first.flac") ||
+        !SetEnvironmentVariableW(L"AIMP_ETS2_CAST_REMOTE_INFO_NAME", mappingName)) {
+        fwprintf(stderr, L"Unable to prepare AIMP metadata mapping: %lu\n", GetLastError());
+        if (metadataView) UnmapViewOfFile(metadataView);
+        if (metadataMapping) CloseHandle(metadataMapping);
+        return 3;
+    }
+
     HMODULE lame = nullptr;
     if (argc >= 4) {
         lame = LoadLibraryW(argv[3]);
         if (!lame) {
             fwprintf(stderr, L"Unable to preload libLAME.dll: %lu\n", GetLastError());
-            return 3;
+            return 4;
         }
     }
     HMODULE plugin = LoadLibraryW(argv[1]);
     if (!plugin) {
         fwprintf(stderr, L"LoadLibrary failed: %lu\n", GetLastError());
         if (lame) FreeLibrary(lame);
-        return 4;
+        return 5;
     }
     auto getHeader = reinterpret_cast<WinampDSPGetHeader2Proc>(GetProcAddress(plugin, "winampDSPGetHeader2"));
     auto testStart = reinterpret_cast<TestStartProc>(GetProcAddress(plugin, "ets2cast_test_start"));
@@ -52,21 +126,21 @@ int wmain(int argc, wchar_t **argv) {
         fprintf(stderr, "Required export missing\n");
         FreeLibrary(plugin);
         if (lame) FreeLibrary(lame);
-        return 5;
+        return 6;
     }
     winampDSPHeader *header = getHeader();
     if (!header || header->version != WINAMP_DSP_HDRVER || !header->getModule) {
         fprintf(stderr, "Invalid DSP header\n");
         FreeLibrary(plugin);
         if (lame) FreeLibrary(lame);
-        return 6;
+        return 7;
     }
     winampDSPModule *module = header->getModule(0);
     if (!module || !module->init || !module->modifySamples || !module->quit) {
         fprintf(stderr, "Invalid DSP module\n");
         FreeLibrary(plugin);
         if (lame) FreeLibrary(lame);
-        return 7;
+        return 8;
     }
     module->parentWindow = GetConsoleWindow();
     module->libraryInstance = plugin;
@@ -75,7 +149,7 @@ int wmain(int argc, wchar_t **argv) {
         module->quit(module);
         FreeLibrary(plugin);
         if (lame) FreeLibrary(lame);
-        return 8;
+        return 9;
     }
     // Exercise repeated Start -> Stop -> Start cycles on the same loaded
     // plugin instance before feeding PCM.
@@ -87,7 +161,7 @@ int wmain(int argc, wchar_t **argv) {
             module->quit(module);
             FreeLibrary(plugin);
             if (lame) FreeLibrary(lame);
-            return 9;
+            return 10;
         }
     }
     if (testLogPath) {
@@ -105,8 +179,20 @@ int wmain(int argc, wchar_t **argv) {
     printf("SMOKE HOST READY http://127.0.0.1:6969/stream\n");
     fflush(stdout);
     const ULONGLONG start = GetTickCount64();
+    const ULONGLONG secondMetadataAt = static_cast<ULONGLONG>(seconds) * 1000u / 3u;
+    const ULONGLONG thirdMetadataAt = static_cast<ULONGLONG>(seconds) * 2000u / 3u;
+    int metadataTrack = 1;
     while (GetTickCount64() - start < static_cast<ULONGLONG>(seconds) * 1000u) {
         const ULONGLONG elapsed = GetTickCount64() - start;
+        if (elapsed >= secondMetadataAt && metadataTrack == 1) {
+            WriteRemoteInfo(metadataView, L"Test Artist", L"Second Track", L"C:\\Music\\second.mp3");
+            metadataTrack = 2;
+            printf("METADATA_TRACK=2\n");
+        } else if (elapsed >= thirdMetadataAt && metadataTrack == 2) {
+            WriteRemoteInfo(metadataView, L"Test Artist", L"Third Track", L"C:\\Music\\third.ogg");
+            metadataTrack = 3;
+            printf("METADATA_TRACK=3\n");
+        }
         if (elapsed >= 9000 && elapsed < 11000) {
             Sleep(50);
             continue;
@@ -155,6 +241,9 @@ int wmain(int argc, wchar_t **argv) {
     module->quit(module);
     FreeLibrary(plugin);
     if (lame) FreeLibrary(lame);
+    SetEnvironmentVariableW(L"AIMP_ETS2_CAST_REMOTE_INFO_NAME", nullptr);
+    UnmapViewOfFile(metadataView);
+    CloseHandle(metadataMapping);
     printf("SMOKE HOST COMPLETE\n");
     return 0;
 }
